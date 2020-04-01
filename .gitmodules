@@ -3,3 +3,7 @@
 	url = https://github.com/psychoinformatics-de/studyforrest-data-annotations.git
 	branch = master
 	datalad-id = 45b9ab26-07fc-11e8-8c71-f0d5bf7b5561
+[submodule "data/studyforrest-data-aligned"]
+	path = data/studyforrest-data-aligned
+	url = https://github.com/psychoinformatics-de/studyforrest-data-aligned.git
+	branch = master
