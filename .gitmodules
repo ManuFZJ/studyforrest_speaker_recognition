@@ -7,3 +7,7 @@
 	path = data/studyforrest-data-aligned
 	url = https://github.com/psychoinformatics-de/studyforrest-data-aligned.git
 	branch = master
+[submodule "data/studyforrest-data-templatetransforms"]
+	path = data/studyforrest-data-templatetransforms
+	url = https://github.com/psychoinformatics-de/studyforrest-data-templatetransforms.git
+	branch = master
