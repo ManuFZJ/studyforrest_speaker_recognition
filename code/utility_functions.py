@@ -155,8 +155,8 @@ def preprocessing(ds_p, ref_space, warp_files, mask_p, detrending, use_zscore, u
             ds = mvpa.fmri_dataset(samples=warped_ds)
 
     part_info = find_participant_info(ds_p)
-    ds.sa['participant'] = [part_info[0] * ds.shape[0]]
-    ds.sa['chunks'] = [part_info[1] * ds.shape[0]]
+    ds.sa['participant'] = [part_info[0]] * ds.shape[0]
+    ds.sa['chunks'] = [part_info[1]] * ds.shape[0]
     if detrending == True:
         detrender = mvpa.PolyDetrendMapper(polyord=1)
         ds = ds.get_mapped(detrender)
@@ -195,10 +195,10 @@ def load_create_save_ds(ds_save_p, dataset_list, ref_space, warp_files, mask, de
                         use_zscore, use_events, anno_dir, use_glm_estimates, targets,
                         event_offset, event_dur):
     if ds_save_p.exists():
-        ds = mvpa.h5load(ds_save_p)
+        ds = mvpa.h5load(str(ds_save_p))
     else:
         ds = preprocess_datasets(dataset_list, ref_space, warp_files, mask, detrending,
                                  use_zscore, use_events, anno_dir, use_glm_estimates, targets,
                                  event_offset, event_dur)
-        mvpa.h5save(ds_save_p, ds)
+        mvpa.h5save(str(ds_save_p), ds)
     return ds
