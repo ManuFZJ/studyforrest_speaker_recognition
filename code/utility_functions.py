@@ -149,8 +149,32 @@ def get_adjusted_mask(ori_mask, ref_space, **kwargs):
         nib.save(new_mask, "{}_adjusted.nii.gz".format(ori_mask[:-7]))
     return new_mask
 
+# prepare roi info for ds
+def prepare_roi_info(roi_mask_list):
+    roi_dict = {}
+    for roi_mask in roi_mask_list:
+        key = roi_mask.split("/")[-1].split("_", 1)[0]
+        roi_dict[key] = roi_mask
+    return roi_dict
+
+# fix array-like info after event extraction
+def fix_info_after_events(ds):
+    if type(ds.sa.chunks[0]) is np.ndarray:
+        current_chunk_arr = ds.sa.chunks
+        new_chunk_arr = [array[0] for array in current_chunk_arr]
+        ds.sa["chunks"] = new_chunk_arr
+
+    if type(ds.sa.participant[0]) is np.ndarray:
+        current_part_arr = ds.sa.participant
+        new_part_arr = [array[0] for array in current_part_arr]
+        ds.sa["participant"] = new_part_arr
+
+    return (ds)
+
 # Preprocess individual dataset
 def preprocessing(ds_p, ref_space, warp_files, mask_p, **kwargs):
+    mask_p = str(mask_p)
+    ref_space = str(ref_space)
     detrending = kwargs.get('detrending', True)
     use_zscore = kwargs.get('use_zscore', True)
 
@@ -160,6 +184,8 @@ def preprocessing(ds_p, ref_space, warp_files, mask_p, **kwargs):
     targets = kwargs.get('targets', None)
     event_offset = kwargs.get('event_offset', None)
     event_dur = kwargs.get('event_dur', None)
+
+    rois = kwargs.get('rois', None)
 
     vp_num_str = ds_p[(ds_p.find("sub") + 4):(ds_p.find("sub") + 6)]
     warp_file = [file for file in warp_files if file.find(vp_num_str) != -1][0]
@@ -176,9 +202,15 @@ def preprocessing(ds_p, ref_space, warp_files, mask_p, **kwargs):
     if os.path.isfile(warped_ds):
         if mask_p != None:
             mask = get_adjusted_mask(mask_p, ref_space)
-            ds = mvpa.fmri_dataset(samples=warped_ds, mask=mask)
+            if rois != None:
+                ds = mvpa.fmri_dataset(samples=warped_ds, mask=mask, add_fa=rois)
+            else:
+                ds = mvpa.fmri_dataset(samples=warped_ds, mask=mask)
         else:
-            ds = mvpa.fmri_dataset(samples=warped_ds)
+            if rois != None:
+                ds = mvpa.fmri_dataset(samples=warped_ds, add_fa=rois)
+            else:
+                ds = mvpa.fmri_dataset(samples=warped_ds)
 
     ds.sa['participant'] = [int(part_info[0])]
     ds.sa['chunks'] = [int(part_info[2])]
@@ -189,15 +221,17 @@ def preprocessing(ds_p, ref_space, warp_files, mask_p, **kwargs):
         mvpa.zscore(ds)
     if use_events == True:
         events = create_event_dict(anno_dir, ds_p, part_info[1],
-                                      ['onset', 'duration', 'targets'], targets)
+                                   ['onset', 'duration', 'targets'], targets)
         if use_glm_estimates == True:
             ds = mvpa.fit_event_hrf_model(ds, events, time_attr='time_coords',
                                           condition_attr='targets')
+
         else:
             ds = mvpa.extract_boxcar_event_samples(ds, events=events, time_attr='time_coords',
                                                    match='closest', event_offset=event_offset,
                                                    event_duration=event_dur, eprefix='event',
                                                    event_mapper=None)
+            ds = fix_info_after_events(ds)
     return ds
 
 # Preprocess multiple datasets
@@ -212,18 +246,25 @@ def preprocess_datasets(dataset_list, ref_space, warp_files, mask, **kwargs):
     event_offset = kwargs.get('event_offset', None)
     event_dur = kwargs.get('event_dur', None)
 
+    rois = kwargs.get('rois', None)
+
     if isinstance(dataset_list, list):
         datasets = [preprocessing(ds_p, ref_space, warp_files, mask, detrending=detrending,
                                   use_zscore=use_zscore, use_events=use_events, anno_dir=anno_dir,
                                   use_glm_estimates=use_glm_estimates, targets=targets,
-                                  event_offset=event_offset, event_dur=event_dur)
+                                  event_offset=event_offset, event_dur=event_dur, rois=rois)
                     for ds_p in dataset_list]
+
+        if use_glm_estimates == True:
+            for ds in datasets:
+                del ds.sa["regressors"]
+
         ds = mvpa.vstack(datasets, a='drop_nonunique', fa='drop_nonunique')
     else:
         ds = preprocessing(dataset_list, ref_space, warp_files, mask, detrending=detrending,
                            use_zscore=use_zscore, use_events=use_events, anno_dir=anno_dir,
                            use_glm_estimates=use_glm_estimates, targets=targets,
-                           event_offset=event_offset, event_dur=event_dur)
+                           event_offset=event_offset, event_dur=event_dur, rois=rois)
     return ds
 
 # Load or create and save ds
@@ -238,12 +279,14 @@ def load_create_save_ds(ds_save_p, dataset_list, ref_space, warp_files, mask, **
     event_offset = kwargs.get('event_offset', None)
     event_dur = kwargs.get('event_dur', None)
 
+    rois = kwargs.get('rois', None)
+
     if ds_save_p.exists():
         ds = mvpa.h5load(str(ds_save_p))
     else:
         ds = preprocess_datasets(dataset_list, ref_space, warp_files, mask, detrending=detrending,
                                  use_zscore=use_zscore, use_events=use_events, anno_dir=anno_dir,
                                  use_glm_estimates=use_glm_estimates, targets=targets,
-                                 event_offset=event_offset, event_dur=event_dur)
+                                 event_offset=event_offset, event_dur=event_dur, rois=rois)
         mvpa.h5save(str(ds_save_p), ds)
     return ds
