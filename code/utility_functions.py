@@ -103,7 +103,7 @@ def create_event_dict(anno_files_dir, ds_path, anno_type, columns, targets):
 # Warp image to desired space
 # change later so there is only one temp warped image
 def warp_image(bold_file, ref_space, warp_file, output_path):
-    if os.path.isfile(output_path) != True:
+    if not os.path.isfile(output_path):
         subprocess.call(['applywarp', '-r', ref_space, "-i", bold_file, "-o",
                          output_path, "-w", warp_file])
     return output_path
@@ -169,7 +169,7 @@ def fix_info_after_events(ds):
         new_part_arr = [array[0] for array in current_part_arr]
         ds.sa["participant"] = new_part_arr
 
-    return (ds)
+    return ds
 
 # Preprocess individual dataset
 def preprocessing(ds_p, ref_space, warp_files, mask_p, **kwargs):
@@ -200,29 +200,29 @@ def preprocessing(ds_p, ref_space, warp_files, mask_p, **kwargs):
         time.sleep(5)
 
     if os.path.isfile(warped_ds):
-        if mask_p != None:
+        if mask_p is not None:
             mask = get_adjusted_mask(mask_p, ref_space)
-            if rois != None:
+            if rois is not None:
                 ds = mvpa.fmri_dataset(samples=warped_ds, mask=mask, add_fa=rois)
             else:
                 ds = mvpa.fmri_dataset(samples=warped_ds, mask=mask)
         else:
-            if rois != None:
+            if rois is not None:
                 ds = mvpa.fmri_dataset(samples=warped_ds, add_fa=rois)
             else:
                 ds = mvpa.fmri_dataset(samples=warped_ds)
 
     ds.sa['participant'] = [int(part_info[0])]
     ds.sa['chunks'] = [int(part_info[2])]
-    if detrending == True:
+    if detrending:
         detrender = mvpa.PolyDetrendMapper(polyord=1)
         ds = ds.get_mapped(detrender)
-    if use_zscore == True:
+    if use_zscore:
         mvpa.zscore(ds)
-    if use_events == True:
+    if use_events:
         events = create_event_dict(anno_dir, ds_p, part_info[1],
                                    ['onset', 'duration', 'targets'], targets)
-        if use_glm_estimates == True:
+        if use_glm_estimates:
             ds = mvpa.fit_event_hrf_model(ds, events, time_attr='time_coords',
                                           condition_attr='targets')
 
@@ -255,7 +255,7 @@ def preprocess_datasets(dataset_list, ref_space, warp_files, mask, **kwargs):
                                   event_offset=event_offset, event_dur=event_dur, rois=rois)
                     for ds_p in dataset_list]
 
-        if use_glm_estimates == True:
+        if use_glm_estimates:
             for ds in datasets:
                 del ds.sa["regressors"]
 
