@@ -9,16 +9,18 @@ import numpy as np
 import pandas as pd
 import nibabel as nib
 import nilearn as nil
+import scipy as sp
 
 from numpy.testing.decorators import skipif
 import mvpa2.suite as mvpa
 
 # Get files
 def get_files(dataset_dir, rglob_string):
-    files = [str(Path("/").joinpath((Path(file).relative_to("/"))))
-             for file in dataset_dir.rglob(rglob_string)]
+    files = [str(Path("/").joinpath((Path(found_file).relative_to("/"))))
+             for found_file in dataset_dir.rglob(rglob_string)]
     files = np.sort(files).tolist()
     return files
+
 
 # Check if file/dir exists
 def check_exi(path):
@@ -28,6 +30,7 @@ def check_exi(path):
     else:
         output = False
     return output
+
 
 # Check for file availability
 def check_file_completeness(file_list):
@@ -40,9 +43,12 @@ def check_file_completeness(file_list):
         output = True
     elif "warp" in list_element and len(file_list) == 15:
         output = True
+    elif "gm" in list_element and len(file_list) == 4:
+        output = True
     else:
         output = False
     return output
+
 
 # Check if all components (directories, files, file_lists are complete)
 def check_all_components(path_list, file_lists):
@@ -53,7 +59,7 @@ def check_all_components(path_list, file_lists):
     prob_paths_idx = [
         index
         for index, element in enumerate(path_exi_list)
-        if element == False
+        if element is False
     ]
     path_output = "All directories seem to be properly set up"
     if len(prob_paths_idx) != 0:
@@ -69,9 +75,9 @@ def check_all_components(path_list, file_lists):
     prob_lists_idx = [
         index
         for index, element in enumerate(file_comp_list)
-        if element == False
+        if element is False
     ]
-    lists_output = "All file lists seem to complete"
+    lists_output = "All file lists seem to be complete"
     if len(prob_lists_idx) != 0:
         lists_output = [
             "This list is incomplete: {}".format(prob_ele[0])
@@ -79,6 +85,7 @@ def check_all_components(path_list, file_lists):
             if file_lists.index(prob_ele) in prob_lists_idx
         ]
     return path_output, lists_output
+
 
 # Get participant + run number + stimulus type
 def find_participant_info(ds_p):
@@ -89,16 +96,32 @@ def find_participant_info(ds_p):
                  ]
     return part_info
 
+# Select only events after speaker change
+def speaker_change(df, columns):
+    bool_list = ["True"]
+    for idx in range(1, len(df)):
+        if idx != 1 and df.iloc[idx].loc["person"] != df.iloc[idx - 1].loc["person"]:
+            bool_list.append("True")
+        else:
+            bool_list.append("False")
+    df['include'] = bool_list
+    df = df[df['include'] == "True"]
+    df = df.iloc[:,0:3]
+    return df
+
 # Create event dict for the specific run of the individual dataset
 def create_event_dict(anno_files_dir, ds_path, anno_type, columns, targets):
     part_info = find_participant_info(ds_path)
-    correct_anno_file = get_files(anno_files_dir, "*emotions*{}*run*{}*.tsv".format(anno_type,
-                                                                                    part_info[2]))
+    correct_anno_file = get_files(anno_files_dir, "*{}*{}*.tsv".format(anno_type,
+                                                                          part_info[2]))
     anno_info = pd.read_csv(correct_anno_file[0], delimiter="\t", header=0, names=columns,
                             usecols=columns)
-    events = anno_info.loc[anno_info['targets'].isin(targets)]
+    anno_info = speaker_change(anno_info, columns)
+
+    events = anno_info.loc[anno_info[columns[2]].isin(targets)]
     events_dict = events.to_dict(orient='records')  # records or index
     return events_dict
+
 
 # Warp image to desired space
 # change later so there is only one temp warped image
@@ -108,46 +131,78 @@ def warp_image(bold_file, ref_space, warp_file, output_path):
                          output_path, "-w", warp_file])
     return output_path
 
+
 # Find or generate fitting mask
 def get_adjusted_mask(ori_mask, ref_space, **kwargs):
     overlap_mask = kwargs.get('overlap_mask', None)
-    if overlap_mask is None:
-        new_mask_p = ori_mask[:-7] + "_adjusted.nii.gz"
+    ori_mask = str(ori_mask)
+    ref_space = str(ref_space)
+    if overlap_mask is not None:
+        overlap_mask = str(overlap_mask)
+        overlap_mask_p = str(overlap_mask)
+
+    mask = nib.load(ori_mask)
+    mask_affine = mask.affine
+    mask_shape = mask.shape
+
+    ref = nib.load(ref_space)
+    ref_affine = ref.affine
+    ref_shape = ref.shape
+
+    if np.array_equal(mask_affine, ref_affine) and np.array_equal(mask_shape, ref_shape):
+        new_mask_p = ori_mask
+        change = 0
     else:
-        new_mask_p = "{}_{}_overlap.nii.gz".format(ori_mask[:-7],
-                                                   overlap_mask.split("/")[-1].split("_", 1)[0])
-    if os.path.isfile(new_mask_p):
-        new_mask = nib.load(new_mask_p)
-    elif overlap_mask is not None and os.path.isfile(overlap_mask):
-        mask = nib.load(ori_mask)
-        overlap_mask = nib.load(overlap_mask)
-        ds = mvpa.fmri_dataset(samples=ref_space)
-        affine = ds.a.imgaffine
-        shape = ds.a.voxel_dim
-        mask_res = nil.image.resample_img(mask, target_affine=affine,
-                                          target_shape=shape, clip=True,
+        new_mask = nil.image.resample_img(mask, target_affine=ref_affine,
+                                          target_shape=ref_shape, clip=True,
                                           interpolation="continuous")
-        overlap_mask_res = nil.image.resample_img(overlap_mask, target_affine=affine,
-                                                  target_shape=shape, clip=True,
-                                                  interpolation="continuous")
-        mask_data = mask_res.get_fdata()
-        overlap_mask_data = overlap_mask_res.get_fdata()
-        in_common = np.logical_and(mask_data, overlap_mask_data).astype(np.int)
-        new_mask = nil.image.new_img_like(mask, in_common, affine=mask.affine)
-        nib.save(new_mask, new_mask_p)
-    else:
-        mask = nib.load(ori_mask)
-        ds = mvpa.fmri_dataset(samples=ref_space)
-        affine = ds.a.imgaffine
-        shape = ds.a.voxel_dim
-        new_mask = nil.image.resample_img(mask, target_affine=affine,
-                                          target_shape=shape, clip=True,
-                                          interpolation="continuous")
+
         new_mask_data = new_mask.get_fdata()
-        bool_data = new_mask_data.astype("int32")  # astype(bool) testen?
-        new_mask = nil.image.new_img_like(new_mask, bool_data, affine=new_mask.affine)
-        nib.save(new_mask, "{}_adjusted.nii.gz".format(ori_mask[:-7]))
-    return new_mask
+        mean_val = np.mean(new_mask_data)
+        new_mask_data[new_mask_data >= mean_val] = 1.0
+        new_mask_data[new_mask_data < mean_val] = 0.0
+
+        new_mask_data = sp.ndimage.binary_dilation(new_mask_data)
+        new_mask = nil.image.new_img_like(new_mask, new_mask_data, affine=ref_affine)
+        change = 1
+
+    if overlap_mask is None and change == 1:
+        new_mask_p = "{}_adjusted.nii.gz".format(ori_mask[:-7])
+        nib.save(new_mask, new_mask_p)
+    elif overlap_mask is not None:
+        overlap_mask = nib.load(overlap_mask)
+        overlap_mask_affine = overlap_mask.affine
+        overlap_mask_shape = overlap_mask.shape
+
+        if not np.array_equal(overlap_mask_affine, ref_affine) or not np.array_equal(overlap_mask_shape, ref_shape):
+            overlap_mask = nil.image.resample_img(overlap_mask, target_affine=ref_affine,
+                                                  target_shape=ref_shape, clip=True,
+                                                  interpolation="continuous")
+        mask_data = new_mask.get_fdata()
+        overlap_mask_data = overlap_mask.get_fdata()
+
+        mask_mean = np.mean(mask_data)
+        mask_data[mask_data >= mask_mean] = 1.0
+        mask_data[mask_data < mask_mean] = 0.0
+        mask_data[np.isnan(mask_data)] = 0.0
+
+        overlap_mask_mean = np.mean(overlap_mask_data)
+        overlap_mask_data[overlap_mask_data >= overlap_mask_mean] = 1.0
+        overlap_mask_data[overlap_mask_data < overlap_mask_mean] = 0.0
+        overlap_mask_data[np.isnan(overlap_mask_data)] = 0.0
+
+        mask_data_bool = (mask_data != 0)
+        overlap_mask_data_bool = (overlap_mask_data != 0)
+
+        in_common = np.logical_and(mask_data_bool, overlap_mask_data_bool)
+        in_common = sp.ndimage.binary_dilation(in_common)
+
+        new_mask = nil.image.new_img_like(new_mask, in_common, affine=ref_affine)
+        new_mask_p = "{}_{}_overlap.nii.gz".format(ori_mask[:-7],
+                                                   overlap_mask_p.split("/")[-1].split("_", 1)[0])
+        nib.save(new_mask, new_mask_p)
+    return new_mask_p
+
 
 # prepare roi info for ds
 def prepare_roi_info(roi_mask_list):
@@ -156,6 +211,7 @@ def prepare_roi_info(roi_mask_list):
         key = roi_mask.split("/")[-1].split("_", 1)[0]
         roi_dict[key] = roi_mask
     return roi_dict
+
 
 # fix array-like info after event extraction
 def fix_info_after_events(ds):
@@ -175,7 +231,7 @@ def fix_info_after_events(ds):
 def preprocessing(ds_p, ref_space, warp_files, mask_p, **kwargs):
     mask_p = str(mask_p)
     ref_space = str(ref_space)
-    detrending = kwargs.get('detrending', True)
+    detrending = kwargs.get('detrending', None)
     use_zscore = kwargs.get('use_zscore', True)
 
     use_events = kwargs.get('use_events', False)
@@ -188,12 +244,12 @@ def preprocessing(ds_p, ref_space, warp_files, mask_p, **kwargs):
     rois = kwargs.get('rois', None)
 
     vp_num_str = ds_p[(ds_p.find("sub") + 4):(ds_p.find("sub") + 6)]
-    warp_file = [file for file in warp_files if file.find(vp_num_str) != -1][0]
+    warp_file = [warp_file for warp_file in warp_files if warp_file.find(vp_num_str) != -1][0]
     part_info = find_participant_info(ds_p)
     temp_file_add = "sub-{}_{}-movie_run-{}_warped_file.nii.gz".format(part_info[0],
                                                                        part_info[1],
                                                                        int(part_info[2]))
-    temp_file = str((Path.cwd().parents[0]).joinpath("data", "tmp", temp_file_add))
+    temp_file = str((Path.cwd().parents[0]).joinpath("data", "tmp", "runs_for_testing", temp_file_add))
     warped_ds = warp_image(ds_p, ref_space, warp_file, temp_file)
 
     while not os.path.exists(warped_ds):
@@ -214,14 +270,14 @@ def preprocessing(ds_p, ref_space, warp_files, mask_p, **kwargs):
 
     ds.sa['participant'] = [int(part_info[0])]
     ds.sa['chunks'] = [int(part_info[2])]
-    if detrending:
+    if detrending is not None:
         detrender = mvpa.PolyDetrendMapper(polyord=1)
         ds = ds.get_mapped(detrender)
     if use_zscore:
         mvpa.zscore(ds)
     if use_events:
         events = create_event_dict(anno_dir, ds_p, part_info[1],
-                                   ['onset', 'duration', 'targets'], targets)
+                                   ['onset', 'duration', 'person'], targets)
         if use_glm_estimates:
             ds = mvpa.fit_event_hrf_model(ds, events, time_attr='time_coords',
                                           condition_attr='targets')
@@ -233,6 +289,7 @@ def preprocessing(ds_p, ref_space, warp_files, mask_p, **kwargs):
                                                    event_mapper=None)
             ds = fix_info_after_events(ds)
     return ds
+
 
 # Preprocess multiple datasets
 def preprocess_datasets(dataset_list, ref_space, warp_files, mask, **kwargs):
@@ -267,6 +324,7 @@ def preprocess_datasets(dataset_list, ref_space, warp_files, mask, **kwargs):
                            event_offset=event_offset, event_dur=event_dur, rois=rois)
     return ds
 
+
 # Load or create and save ds
 def load_create_save_ds(ds_save_p, dataset_list, ref_space, warp_files, mask, **kwargs):
     detrending = kwargs.get('detrending', True)
@@ -288,5 +346,5 @@ def load_create_save_ds(ds_save_p, dataset_list, ref_space, warp_files, mask, **
                                  use_zscore=use_zscore, use_events=use_events, anno_dir=anno_dir,
                                  use_glm_estimates=use_glm_estimates, targets=targets,
                                  event_offset=event_offset, event_dur=event_dur, rois=rois)
-        mvpa.h5save(str(ds_save_p), ds)
+        mvpa.h5save(str(ds_save_p), ds) # , compression=9
     return ds
