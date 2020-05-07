@@ -97,16 +97,26 @@ def find_participant_info(ds_p):
     return part_info
 
 # Select only events after speaker change
-def speaker_change(df, columns):
-    bool_list = ["True"]
-    for idx in range(1, len(df)):
-        if idx != 1 and df.iloc[idx].loc["person"] != df.iloc[idx - 1].loc["person"]:
-            bool_list.append("True")
+# add target column as input
+def speaker_change(df):
+    bool_list = []
+    for idx in range(0, len(df)):
+        if df.iloc[idx].loc["pos"] == "SENTENCE":
+            if idx == 1:
+                bool_list.append("True")
+            elif idx != 1:
+                if df.iloc[idx].loc["person"] != df.iloc[idx - 1].loc["person"]:
+                    bool_list.append("True")
+                elif (df.iloc[idx].loc["onset"] - df.iloc[idx - 1].loc["onset"]) >= 2:
+                    bool_list.append("True")
+                else:
+                    bool_list.append("False")
         else:
             bool_list.append("False")
+
     df['include'] = bool_list
     df = df[df['include'] == "True"]
-    df = df.iloc[:,0:3]
+    df = df.iloc[:, 0:3]
     return df
 
 # Create event dict for the specific run of the individual dataset
@@ -114,11 +124,11 @@ def create_event_dict(anno_files_dir, ds_path, anno_type, columns, targets):
     part_info = find_participant_info(ds_path)
     correct_anno_file = get_files(anno_files_dir, "*{}*{}*.tsv".format(anno_type,
                                                                           part_info[2]))
-    anno_info = pd.read_csv(correct_anno_file[0], delimiter="\t", header=0, names=columns,
-                            usecols=columns)
-    anno_info = speaker_change(anno_info, columns)
+    anno_info = pd.read_csv(correct_anno_file[0], delimiter="\t", header=0)
+    anno_info = speaker_change(anno_info)
 
     events = anno_info.loc[anno_info[columns[2]].isin(targets)]
+    events = events.rename(columns={"person": "targets"})
     events_dict = events.to_dict(orient='records')  # records or index
     return events_dict
 
@@ -348,3 +358,142 @@ def load_create_save_ds(ds_save_p, dataset_list, ref_space, warp_files, mask, **
                                  event_offset=event_offset, event_dur=event_dur, rois=rois)
         mvpa.h5save(str(ds_save_p), ds) # , compression=9
     return ds
+
+# Validation stuff
+def num_same_event(ds, targets):
+    list_ev_dicts = []
+    for seg in np.unique(ds.sa.chunks):
+        ev_dict = {}
+        for person in np.unique(ds[ds.sa.chunks == seg].sa.targets):
+            num = sum(1 for event in ds[ds.sa.chunks == seg].sa.targets
+                      if event == person)
+            key = "{}".format(person)
+            ev_dict[key] = num
+        for person in targets:
+            key = "{}".format(person)
+            if key not in ev_dict:
+                ev_dict[key] = 0
+        list_ev_dicts.append(ev_dict)
+    df = pd.DataFrame(list_ev_dicts, index=range(1, len(np.unique(ds.sa.chunks))+1))
+    return df
+
+# Helper func to find correct indexes
+def find_idx_pairs(df, pri_idx_array, sec_idx_array):
+    data_list = [[abs(df.iloc[pri_idx].loc["onset"] + df.iloc[pri_idx].loc["duration"]
+                      - df.iloc[sec_idx].loc["onset"]), pri_idx, sec_idx]
+                 for pri_idx in pri_idx_array
+                 for sec_idx in sec_idx_array]
+
+    pair_list = []
+    check_list = []
+    find_mins = True
+
+    while find_mins:
+        data_diff_list = [element[0] for element in data_list]
+        diff_min = np.amin(data_diff_list)
+        min_idx = int(np.argwhere(data_diff_list == diff_min)[0])
+
+        index1 = data_list[min_idx][1]
+        index2 = data_list[min_idx][2]
+
+        if index1 in check_list or index2 in check_list:
+            data_list.pop(min_idx)
+
+        if index1 not in check_list and index2 not in check_list:
+            pair_list.append([index1, index2])
+            check_list.extend([index1, index2])
+            data_list.pop(min_idx)
+
+        if not data_list:
+            find_mins = False
+
+    return pair_list
+
+
+# duration of last event before speaker change has to be calculated in
+def breaks_speaker(anno_files, targets, same_speaker):
+    break_dict_list = []
+
+    for anno_file in anno_files:
+        break_dict = {}
+
+        df = pd.read_csv(anno_file, delimiter="\t", header=0,
+                         usecols=["onset", "duration", "person", "pos"])
+
+        if same_speaker:
+            for target in targets:
+                all_rel_idx = [idx for idx in range(0, len(df))
+                               if df.iloc[idx].loc["person"] == target]
+
+                if all_rel_idx:
+                    # last idx before new sentence, idx of next sentence
+                    end_start_pairs = [[idx, next_index]
+                                       for idx, next_index in zip(all_rel_idx, all_rel_idx[1:])
+                                       if df.iloc[next_index].loc["pos"] == "SENTENCE"]
+
+                    # onset of next sentence - (onset + duration) of last event before sentence
+                    diff_list = [abs((df.iloc[pair[0]].loc["onset"]
+                                      + df.iloc[pair[0]].loc["duration"])
+                                     - df.iloc[pair[1]].loc["onset"])
+                                 for pair in end_start_pairs]
+
+                    mean_diff = np.around(np.mean(diff_list), decimals=3)
+                    break_dict[target] = mean_diff
+                else:
+                    break_dict[target] = np.nan
+        else:
+            for pri_target in targets:
+
+                pri_target_idx_first = [idx for idx in range(0, len(df))
+                                        if df.iloc[idx].loc["person"] == pri_target
+                                        if idx == 0 or idx > 0 and
+                                        df.iloc[idx - 1].loc["person"] != pri_target]
+                pri_target_idx_last = [idx for idx in range(0, len(df))
+                                       if df.iloc[idx].loc["person"] == pri_target
+                                       if idx < len(df) - 1 and
+                                       df.iloc[idx + 1].loc["person"] != pri_target]
+
+                for sec_target in targets:
+                    if sec_target != pri_target:
+
+                        key = "{} - {}".format(pri_target, sec_target)
+
+                        sec_target_idx_first = [idx for idx in range(0, len(df))
+                                                if df.iloc[idx].loc["person"] == sec_target
+                                                if idx == 0 or idx > 0 and
+                                                df.iloc[idx - 1].loc["person"] != sec_target]
+                        sec_target_idx_last = [idx for idx in range(0, len(df))
+                                               if df.iloc[idx].loc["person"] == sec_target
+                                               if idx < len(df) - 1 and
+                                               df.iloc[idx + 1].loc["person"] != sec_target]
+
+                        if pri_target_idx_first and sec_target_idx_last:
+                            pair_indexes1 = find_idx_pairs(df, pri_target_idx_first,
+                                                           sec_target_idx_last)
+                        else:
+                            pair_indexes1 = []
+
+                        if pri_target_idx_last and sec_target_idx_first:
+                            pair_indexes2 = find_idx_pairs(df, pri_target_idx_last,
+                                                           sec_target_idx_first)
+                        else:
+                            pair_indexes2 = []
+
+                        pair_indexes1 = pair_indexes1 + pair_indexes2
+
+                        if pair_indexes1:
+                            diff_list = [abs((df.iloc[pair[0]].loc["onset"]
+                                              + df.iloc[pair[0]].loc["duration"])
+                                             - df.iloc[pair[1]].loc["onset"])
+                                         for pair in pair_indexes1
+                                         if pair]
+                            mean_diff = np.around(np.mean(diff_list), decimals=3)
+                            break_dict[key] = mean_diff
+                        else:
+                            break_dict[key] = np.nan
+
+        break_dict_list.append(break_dict)
+
+    break_df = pd.DataFrame(break_dict_list, index=range(1, len(anno_files) + 1))
+
+    return break_df
