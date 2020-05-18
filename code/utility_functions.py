@@ -437,8 +437,7 @@ def breaks_speaker(anno_files, targets, same_speaker):
                                      - df.iloc[pair[1]].loc["onset"])
                                  for pair in end_start_pairs]
 
-                    mean_diff = np.around(np.mean(diff_list), decimals=3)
-                    break_dict[target] = mean_diff
+                    break_dict[target] = diff_list
                 else:
                     break_dict[target] = np.nan
         else:
@@ -487,13 +486,28 @@ def breaks_speaker(anno_files, targets, same_speaker):
                                              - df.iloc[pair[1]].loc["onset"])
                                          for pair in pair_indexes1
                                          if pair]
-                            mean_diff = np.around(np.mean(diff_list), decimals=3)
-                            break_dict[key] = mean_diff
+                            break_dict[key] = diff_list
                         else:
                             break_dict[key] = np.nan
 
-        break_dict_list.append(break_dict)
+        max_list = []
+        for k, v in break_dict.items():
+            if isinstance(v, list):
+                max_list.append(len(v))
+            else:
+                max_list.append(1)
+        max_val = np.max(max_list)
 
-    break_df = pd.DataFrame(break_dict_list, index=range(1, len(anno_files) + 1))
+        for k, v in break_dict.items():
+            if isinstance(v, list):
+                while len(v) < max_val:
+                    break_dict[k].append(np.nan)
+            else:
+                break_dict[k] = [v]
+                for x in range(0, (max_val - 1)):
+                    break_dict[k].append(np.nan)
 
-    return break_df
+        break_df = pd.DataFrame(break_dict)
+        break_dict_list.append(break_df)
+
+    return break_dict_list
